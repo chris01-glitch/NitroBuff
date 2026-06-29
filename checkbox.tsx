@@ -1,29 +1,53 @@
 /**
  * ⚠ ANYTHING PLATFORM — DO NOT REWRITE THIS FILE ⚠
  *
- * Dev-only helper for the social sign-in shim. Reports which OAuth credential
- * env vars are missing for a provider so the builder preview can warn that the
- * button won't work once published. Returns 404 outside development.
+ * Shipped v2 Expo-web postMessage bridge. Renders an HTML page that posts
+ * `{ type: 'AUTH_SUCCESS'|'AUTH_ERROR', jwt, user }` to window.parent —
+ * AuthWebView.tsx listens for exactly that shape. Changing the event type or
+ * payload shape breaks Expo-web auth; do NOT replace with a JSON response or
+ * a redirect.
  */
-import { NextResponse } from "next/server";
+import { auth } from '@/lib/auth';
 
-const REQUIRED_ENV_KEYS: Record<string, string[]> = {
-	google: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
-	apple: ["APPLE_CLIENT_ID", "APPLE_CLIENT_SECRET"],
-};
+// Renders an HTML page that posts the session token to the parent frame.
+// AuthWebView on the mobile "web" platform listens for this postMessage to
+// capture the session after a successful web signin/signup inside its iframe.
+export async function GET(request: Request) {
+  const session = await auth.api.getSession({ headers: request.headers });
 
-export function GET(request: Request) {
-	if (process.env.NEXT_PUBLIC_CREATE_ENV !== "DEVELOPMENT") {
-		return NextResponse.json({ error: "not found" }, { status: 404 });
-	}
+  const payload =
+    session?.user && session?.session
+      ? {
+          type: 'AUTH_SUCCESS',
+          jwt: session.session.token,
+          user: {
+            id: session.user.id,
+            email: session.user.email,
+            name: session.user.name,
+          },
+        }
+      : { type: 'AUTH_ERROR', error: 'Unauthorized' };
 
-	const provider = new URL(request.url).searchParams.get("provider");
-	if (!provider || !(provider in REQUIRED_ENV_KEYS)) {
-		return NextResponse.json({ error: "invalid provider" }, { status: 400 });
-	}
+  const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Signing in…</title>
+</head>
+<body>
+<script>
+(function () {
+  var data = ${JSON.stringify(payload)};
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage(data, '*');
+  }
+})();
+</script>
+</body>
+</html>`;
 
-	const missing = REQUIRED_ENV_KEYS[provider].filter(
-		(key) => !process.env[key],
-	);
-	return NextResponse.json({ provider, missing });
+  return new Response(html, {
+    status: 200,
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  });
 }
